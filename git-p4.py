@@ -468,15 +468,17 @@ def isModeExec(mode):
 def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
-def hashCmd(s):
+def hashCmd(cmd):
+    s = ' '.join(cmd)
     m = hashlib.md5()
     m.update(s)
     return m.hexdigest()
 
-def getP4Result(h,cb):
-    if os.path.exists(cachePath(h)):
-        sys.stderr.write("cache hit!")
-        with open(cachePath(h), 'r+b') as f:
+def getP4Result(cmd,cb):
+    path = cachePath(hashCmd(cmd))
+    if os.path.exists(path):
+        sys.stderr.write("cache hit!\n")
+        with open(path, 'r+b') as f:
             result = []
             try:
                 while True:
@@ -487,10 +489,9 @@ def getP4Result(h,cb):
                         result.append(entry)
             except EOFError:
                 pass
-            sys.stderr.write("length results %d" % len(result))
             return result
     else:
-        sys.stderr.write("cache miss!")
+        sys.stderr.write("cache miss!\n")
         
     return []
 
@@ -510,7 +511,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
     if verbose:
         sys.stderr.write("Opening pipe: %s\n" % str(cmd))
 
-    result = getP4Result(hashCmd(str(cmd)),cb)
+    result = getP4Result(cmd,cb)
     if len(result) != 0:
         return result
 
@@ -533,7 +534,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
-    cache = open(cachePath(hashCmd(str(cmd))), 'w+b')
+    cache = open(cachePath(hashCmd(cmd)), 'w+b')
 
     result = []
     try:
