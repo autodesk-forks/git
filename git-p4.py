@@ -13,6 +13,7 @@ if sys.hexversion < 0x02040000:
     sys.stderr.write("git-p4: requires Python 2.4 or later.\n")
     sys.exit(1)
 import os
+import os.path
 import optparse
 import marshal
 import subprocess
@@ -27,6 +28,7 @@ import zlib
 import ctypes
 import threading
 import Queue
+import hashlib
 
 try:
     from subprocess import CalledProcessError
@@ -50,6 +52,8 @@ defaultLabelRegexp = r'[a-zA-Z0-9_\-.]+$'
 
 # Grab changes in blocks of this many revisions, unless otherwise requested
 defaultBlockSize = 512
+
+defaultCmdCache = os.path.join(os.path.expanduser('~'),'.git-p4-cache')
 
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
@@ -464,6 +468,35 @@ def isModeExec(mode):
 def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
+def hashCmd(s):
+    m = hashlib.md5()
+    m.update(s)
+    return m.hexdigest()
+
+def getP4Result(h,cb):
+    if os.path.exists(cachePath(h)):
+        sys.stderr.write("cache hit!")
+        with open(cachePath(h), 'r+b') as f:
+            result = []
+            try:
+                while True:
+                    entry = marshal.load(f)
+                    if cb is not None:
+                        cb(entry)
+                    else:
+                        result.append(entry)
+            except EOFError:
+                pass
+            sys.stderr.write("length results %d" % len(result))
+            return result
+    else:
+        sys.stderr.write("cache miss!")
+        
+    return []
+
+def cachePath(h):
+    return os.path.join(defaultCmdCache,h)
+            
 def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
 
     if isinstance(cmd,basestring):
@@ -476,6 +509,10 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
     cmd = p4_build_cmd(cmd)
     if verbose:
         sys.stderr.write("Opening pipe: %s\n" % str(cmd))
+
+    result = getP4Result(hashCmd(str(cmd)),cb)
+    if len(result) != 0:
+        return result
 
     # Use a temporary file to avoid deadlocks without
     # subprocess.communicate(), which would put another copy
@@ -496,22 +533,28 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
+    cache = open(cachePath(hashCmd(str(cmd))), 'w+b')
+
     result = []
     try:
         while True:
             entry = marshal.load(p4.stdout)
+            marshal.dump(entry, cache)
             if cb is not None:
                 cb(entry)
             else:
                 result.append(entry)
     except EOFError:
         pass
+
     exitCode = p4.wait()
     if exitCode != 0:
         entry = {}
         entry["p4ExitCode"] = exitCode
+        marshal.dump(entry, cache)
         result.append(entry)
 
+    cache.close()
     return result
 
 def p4Cmd(cmd):
