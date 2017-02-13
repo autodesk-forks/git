@@ -534,13 +534,13 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
-    cache = open(cachePath(hashCmd(cmd)), 'w+b')
+    cache_file = open(cachePath(hashCmd(cmd)), 'w+b')
 
     result = []
     try:
         while True:
             entry = marshal.load(p4.stdout)
-            marshal.dump(entry, cache)
+            marshal.dump(entry, cache_file)
             if cb is not None:
                 cb(entry)
             else:
@@ -552,10 +552,10 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
     if exitCode != 0:
         entry = {}
         entry["p4ExitCode"] = exitCode
-        marshal.dump(entry, cache)
+        marshal.dump(entry, cache_file)
         result.append(entry)
 
-    cache.close()
+    cache_file.close()
     return result
 
 def p4Cmd(cmd):
