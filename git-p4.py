@@ -54,6 +54,7 @@ defaultLabelRegexp = r'[a-zA-Z0-9_\-.]+$'
 defaultBlockSize = 512
 
 defaultCmdCache = os.path.join(os.path.expanduser('~'),'.git-p4-cache')
+p4_inmem_sig = {}
 
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
@@ -468,14 +469,28 @@ def isModeExec(mode):
 def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
-def hashCmd(cmd):
+def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
+    global p4_inmem_sig
+
+    if isinstance(cmd,basestring):
+        cmd = "-G " + cmd
+        expand = True
+    else:
+        cmd = ["-G"] + cmd
+        expand = False
+
+    cmd = p4_build_cmd(cmd)
+    if verbose:
+        sys.stderr.write("Opening pipe: %s\n" % str(cmd))
+
     s = ' '.join(cmd)
     m = hashlib.md5()
     m.update(s)
-    return m.hexdigest()
+    signature = m.hexdigest()
+    if signature in p4_inmem_sig:
+        return p4_in_mem_sig[signature]
 
-def getP4Result(cmd,cb):
-    path = cachePath(hashCmd(cmd))
+    path = os.path.join(defaultCmdCache,signature)
     if os.path.exists(path):
         sys.stderr.write("cache hit!\n")
         with open(path, 'r+b') as f:
@@ -493,28 +508,6 @@ def getP4Result(cmd,cb):
     else:
         sys.stderr.write("cache miss!\n")
         
-    return []
-
-def cachePath(h):
-    return os.path.join(defaultCmdCache,h)
-            
-def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
-
-    if isinstance(cmd,basestring):
-        cmd = "-G " + cmd
-        expand = True
-    else:
-        cmd = ["-G"] + cmd
-        expand = False
-
-    cmd = p4_build_cmd(cmd)
-    if verbose:
-        sys.stderr.write("Opening pipe: %s\n" % str(cmd))
-
-    result = getP4Result(cmd,cb)
-    if len(result) != 0:
-        return result
-
     # Use a temporary file to avoid deadlocks without
     # subprocess.communicate(), which would put another copy
     # of stdout into memory.
@@ -534,7 +527,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
-    cache_file = open(cachePath(hashCmd(cmd)), 'w+b')
+    cache_file = open(path, 'w+b')
 
     result = []
     try:
@@ -556,6 +549,7 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         result.append(entry)
 
     cache_file.close()
+    p4_inmem_cache[sig] = result
     return result
 
 def p4Cmd(cmd):
