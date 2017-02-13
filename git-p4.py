@@ -13,7 +13,6 @@ if sys.hexversion < 0x02040000:
     sys.stderr.write("git-p4: requires Python 2.4 or later.\n")
     sys.exit(1)
 import os
-import os.path
 import optparse
 import marshal
 import subprocess
@@ -54,7 +53,7 @@ defaultLabelRegexp = r'[a-zA-Z0-9_\-.]+$'
 defaultBlockSize = 512
 
 defaultCmdCache = os.path.join(os.path.expanduser('~'),'.git-p4-cache')
-p4_inmem_sig = {}
+P4InMemCache = {}
 
 def p4_build_cmd(cmd):
     """Build a suitable p4 command line.
@@ -470,7 +469,7 @@ def isModeExecChanged(src_mode, dst_mode):
     return isModeExec(src_mode) != isModeExec(dst_mode)
 
 def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
-    global p4_inmem_sig
+    global P4InMemCache
 
     if isinstance(cmd,basestring):
         cmd = "-G " + cmd
@@ -479,40 +478,20 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         cmd = ["-G"] + cmd
         expand = False
 
-    cmd = p4_build_cmd(cmd)
-    if verbose:
-        sys.stderr.write("Opening pipe: %s\n" % str(cmd))
-
     s = ' '.join(cmd)
     m = hashlib.md5()
     m.update(s)
     signature = m.hexdigest()
-    if signature in p4_inmem_sig:
-        return p4_in_mem_sig[signature]
-
     path = os.path.join(defaultCmdCache,signature)
-    if os.path.exists(path):
-        sys.stderr.write("cache hit!\n")
-        with open(path, 'r+b') as f:
-            result = []
-            try:
-                while True:
-                    entry = marshal.load(f)
-                    if cb is not None:
-                        cb(entry)
-                    else:
-                        result.append(entry)
-            except EOFError:
-                pass
-            return result
-    else:
-        sys.stderr.write("cache miss!\n")
-        
+
+    useCache = True
+
     # Use a temporary file to avoid deadlocks without
     # subprocess.communicate(), which would put another copy
     # of stdout into memory.
     stdin_file = None
     if stdin is not None:
+        useCache = False # STDIN changes all the time, cannot reproduce results
         stdin_file = tempfile.TemporaryFile(prefix='p4-stdin', mode=stdin_mode)
         if isinstance(stdin,basestring):
             stdin_file.write(stdin)
@@ -522,18 +501,49 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         stdin_file.flush()
         stdin_file.seek(0)
 
+    cmd = p4_build_cmd(cmd)
+    if verbose:
+        sys.stderr.write("Opening pipe: %s\n" % str(cmd))
+        if not useCache:
+            sys.stderr.write("Not using cache: STDIN!")
+            
+
+    if useCache:
+
+        if signature in P4InMemCache:
+            return P4InMemCache[signature]
+    
+        if os.path.exists(path):
+            if verbose:
+                sys.stderr.write("cache hit!\n")
+            with open(path, 'r+b') as f:
+                result = []
+                try:
+                    while True:
+                        entry = marshal.load(f)
+                        if cb is not None:
+                            cb(entry)
+                        else:
+                            result.append(entry)
+                except EOFError:
+                    pass
+                return result
+        else:
+            if verbose:
+                sys.stderr.write("cache miss!\n")
+        
     p4 = subprocess.Popen(cmd,
                           shell=expand,
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
-    cache_file = open(path, 'w+b')
+    cacheFile = open(path, 'w+b')
 
     result = []
     try:
         while True:
             entry = marshal.load(p4.stdout)
-            marshal.dump(entry, cache_file)
+            marshal.dump(entry, cacheFile)
             if cb is not None:
                 cb(entry)
             else:
@@ -545,11 +555,11 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
     if exitCode != 0:
         entry = {}
         entry["p4ExitCode"] = exitCode
-        marshal.dump(entry, cache_file)
+        marshal.dump(entry, cacheFile)
         result.append(entry)
 
-    cache_file.close()
-    p4_inmem_cache[sig] = result
+    cacheFile.close()
+    P4InMemCache[signature] = result
     return result
 
 def p4Cmd(cmd):
