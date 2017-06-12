@@ -29,6 +29,8 @@ import errno
 import fnmatch
 import threading
 import Queue
+import pickle
+import hashlib
 
 try:
     from subprocess import CalledProcessError
@@ -174,9 +176,41 @@ def read_pipe(c, ignore_error=False):
         die('Command failed: %s\nError: %s' % (str(c), err))
     return out
 
+def p4_read_oid(cmd):
+    oid=None
+    if gitConfig('git-p4.cache'):
+        hash = hashlib.sha1(str(cmd)).hexdigest()
+        if 'changes' in cmd:
+            type = 'changes'
+        elif 'client' in cmd:
+            type = 'client'
+        elif 'describe' in cmd:
+            type = 'describe'
+        elif 'files' in cmd:
+            type = 'files'
+        elif 'print' in cmd:
+            type = 'print'
+        elif 'users' in cmd:
+            type = 'users'
+        elif 'where' in cmd:
+            type = 'where'
+        else:
+            type = ''.join(cmd)
+        dir  = '{0}/{1}/{2}/{3}'.format(gitConfig('git-p4.cache'), type, hash[0:2], hash[2:4])
+        if not os.path.isdir(dir):
+            os.makedirs(dir)
+        oid = '{0}/{1}'.format(dir, hash)
+    return oid
+
 def p4_read_pipe(c, ignore_error=False):
     real_cmd = p4_build_cmd(c)
-    return read_pipe(real_cmd, ignore_error)
+    oid = p4_read_oid(c)
+    if oid and os.path.isfile(oid):
+        return pickle.load(open(oid, 'rb'))
+    out = read_pipe(real_cmd, ignore_error)
+    if oid:
+        pickle.dump(out, open(oid, 'wb'))
+    return out
 
 def read_pipe_lines(c):
     if verbose:
@@ -194,7 +228,13 @@ def read_pipe_lines(c):
 def p4_read_pipe_lines(c):
     """Specifically invoke p4 on the command supplied. """
     real_cmd = p4_build_cmd(c)
-    return read_pipe_lines(real_cmd)
+    oid = p4_read_oid(c)
+    if oid and os.path.isfile(oid):
+        return pickle.load(open(oid, 'rb'))
+    out = read_pipe_lines(real_cmd)
+    if oid:
+        pickle.dump(out, open(oid, 'wb'))
+    return out
 
 def p4_has_command(cmd):
     """Ask p4 for help on this command.  If it returns an error, the
@@ -514,15 +554,32 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         stdin_file.flush()
         stdin_file.seek(0)
 
+    oid = p4_read_oid(
+        cmd if isinstance(cmd, list) else cmd.split() +
+        [ open(stdin_file, 'r').read() if stdin_file else 'none' ]
+    )
+    if oid and os.path.isfile(oid):
+        entries = pickle.load(open(oid, 'rb'))
+        if cb is not None:
+            for entry in entries:
+                cb(entry)
+            return []
+        else:
+            return entries
+
     p4 = subprocess.Popen(cmd,
                           shell=expand,
                           stdin=stdin_file,
                           stdout=subprocess.PIPE)
 
     result = []
+    cache = []
+
     try:
         while True:
             entry = marshal.load(p4.stdout)
+            if oid:
+                cache.append(entry)
             if cb is not None:
                 cb(entry)
             else:
@@ -531,9 +588,15 @@ def p4CmdList(cmd, stdin=None, stdin_mode='w+b', cb=None):
         pass
     exitCode = p4.wait()
     if exitCode != 0:
+        # invalidate cache
+        oid = None
+        cache = None
         entry = {}
         entry["p4ExitCode"] = exitCode
         result.append(entry)
+
+    if oid:
+        pickle.dump(cache, open(oid, 'wb'))
 
     return result
 
